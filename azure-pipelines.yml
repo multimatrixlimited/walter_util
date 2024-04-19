@@ -1,0 +1,33 @@
+  
+
+trigger:
+  branches:
+    include:
+      - master
+
+pool:
+  vmImage: 'ubuntu-latest'
+
+steps:
+- script: |
+    git clone https://github.com/multimatrixlimited/walter_api.git
+    git clone https://github.com/multimatrixlimited/walter_util.git
+    git clone https://github.com/multimatrixlimited/walter_db.git
+  displayName: 'Clone Repositories'
+
+- script: |
+    cd walter_api
+    bash build.sh
+  displayName: 'Run build.sh in walter_api'
+
+- task: AmazonWebServices.aws-vsts-tools.AWSCliInstaller.AWSCliInstaller@1
+  displayName: 'Install AWS CLI'
+  inputs:
+    version: 'latest'
+
+- script: |
+    aws ecr get-login-password --region your-region | docker login --username AWS --password-stdin your-ecr-url
+    docker tag walter_api:latest 995578948441.dkr.ecr.eu-west-1.amazonaws.com/walter_api:latest
+    docker push 995578948441.dkr.ecr.eu-west-1.amazonaws.com/walter_api:latest
+  displayName: 'Push Docker Image to ECR'
+  condition: succeeded()
