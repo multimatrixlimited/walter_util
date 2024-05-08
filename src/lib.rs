@@ -43,7 +43,7 @@ pub fn replace_placeholdersv2(
                     // If not a JSON, replace with the simple replacement
                     // event!(Level::INFO, "{} {}", &key, &replacement);
                     if key.starts_with(":$") {
-                    //     modified_content.push_str(replacement);
+                        modified_content.push_str(replacement);
                     // } else 
                     //     if key.starts_with(":!") {
                     //         modified_content.push_str(replacement);
