@@ -36,9 +36,14 @@ pub fn replace_placeholdersv2(
                     modified_content.push_str(&json_value.to_string());
                 } else {
                     // If not a JSON, replace with the simple replacement
-                    modified_content.push('\'');
-                    modified_content.push_str(replacement);
-                    modified_content.push('\'');
+                    // If not a JSON, replace with the simple replacement
+                    if key.starts_with("~") {
+                        modified_content.push_str(replacement);
+                    } else {
+                        modified_content.push('\'');
+                        modified_content.push_str(replacement);
+                        modified_content.push('\'');
+                    }
                 }
             } else {
                 // If the key is not found, keep the original pattern
