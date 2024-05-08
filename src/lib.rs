@@ -4,6 +4,7 @@ use serde_json::Value;
 use indexmap::IndexMap;
 use axum::extract::Json;
 use serde_json::json;
+// use tracing::{event, span, Level};
 
 //use serde_json::{to_string, self, Error};
 
@@ -15,6 +16,10 @@ pub fn replace_placeholdersv2(
     replacements: &HashMap<String, String>,
     delimiter: char,
 ) -> Result<String, ReplaceError> {
+    // tracing_subscriber::fmt()
+    //     .with_target(true)
+    //     .compact()
+    //     .init();
     let mut modified_content = String::new();
     let mut chars = content.chars();
 
@@ -36,11 +41,17 @@ pub fn replace_placeholdersv2(
                     modified_content.push_str(&json_value.to_string());
                 } else {
                     // If not a JSON, replace with the simple replacement
-                    // If not a JSON, replace with the simple replacement
-                    if key.starts_with("~") {
-                        modified_content.push_str(replacement);
-                    } else {
-                        modified_content.push('\'');
+                    // event!(Level::INFO, "{} {}", &key, &replacement);
+                    if key.starts_with(":$") {
+                    //     modified_content.push_str(replacement);
+                    // } else 
+                    //     if key.starts_with(":!") {
+                    //         modified_content.push_str(replacement);
+                    //     } else 
+                    //     if key.starts_with(":+") {
+                    //         modified_content.push_str(replacement);
+                        } else {
+                            modified_content.push('\'');
                         modified_content.push_str(replacement);
                         modified_content.push('\'');
                     }
@@ -61,48 +72,48 @@ pub fn replace_placeholdersv2(
 }
 
 
-pub fn replace_placeholders(
-    content: &str,
-    replacements: &HashMap<&str, String>,
-    delimiter: char,
-) -> Result<String, ReplaceError> {
-    let mut modified_content = String::new();
-    let mut chars = content.chars();
+// pub fn replace_placeholders(
+//     content: &str,
+//     replacements: &HashMap<&str, String>,
+//     delimiter: char,
+// ) -> Result<String, ReplaceError> {
+//     let mut modified_content = String::new();
+//     let mut chars = content.chars();
 
-    while let Some(ch) = chars.next() {
-        if ch == delimiter {
-            // Check for @key@ pattern
-            let mut key = String::new();
-            while let Some(inner_ch) = chars.next() {
-                if inner_ch == delimiter {
-                    break;
-                }
-                key.push(inner_ch);
-            }
+//     while let Some(ch) = chars.next() {
+//         if ch == delimiter {
+//             // Check for @key@ pattern
+//             let mut key = String::new();
+//             while let Some(inner_ch) = chars.next() {
+//                 if inner_ch == delimiter {
+//                     break;
+//                 }
+//                 key.push(inner_ch);
+//             }
 
-            // Replace the placeholder if the key exists in replacements
-            if let Some(replacement) = replacements.get(&key[..]) {
-                if let Ok(json_value) = serde_json::from_str::<Value>(replacement) {
-                    // If the replacement value is a valid JSON, replace with JSON content
-                    modified_content.push_str(&json_value.to_string());
-                } else {
-                    // If not a JSON, replace with the simple replacement
-                    modified_content.push_str(replacement);
-                }
-            } else {
-                // If the key is not found, keep the original pattern
-                modified_content.push(delimiter);
-                modified_content.push_str(&key);
-                modified_content.push(delimiter);
-            }
-        } else {
-            // If not part of a placeholder, just append the character
-            modified_content.push(ch);
-        }
-    }
+//             // Replace the placeholder if the key exists in replacements
+//             if let Some(replacement) = replacements.get(&key[..]) {
+//                 if let Ok(json_value) = serde_json::from_str::<Value>(replacement) {
+//                     // If the replacement value is a valid JSON, replace with JSON content
+//                     modified_content.push_str(&json_value.to_string());
+//                 } else {
+//                     // If not a JSON, replace with the simple replacement
+//                     modified_content.push_str(replacement);
+//                 }
+//             } else {
+//                 // If the key is not found, keep the original pattern
+//                 modified_content.push(delimiter);
+//                 modified_content.push_str(&key);
+//                 modified_content.push(delimiter);
+//             }
+//         } else {
+//             // If not part of a placeholder, just append the character
+//             modified_content.push(ch);
+//         }
+//     }
 
-    Ok(modified_content)
-}
+//     Ok(modified_content)
+// }
 
 
 pub fn load_properties(filename: &str) -> IndexMap<String, String> {
