@@ -1,0 +1,68 @@
+# Platform Knowledge Entry — walter_util
+
+## walter_util
+**Repo:** walter_util
+**Language:** Rust (edition 2021)
+**Type:** Shared Library
+**Status:** Active
+**Criticality:** MEDIUM — foundational utility crate used by api gateway and potentially other Rust services
+**If stopped:** N/A (library, not a running service) — but if broken, all consuming services fail to compile or produce incorrect SQL queries
+**What it does:** Provides properties file loading, JSON-to-HashMap conversion, and a template placeholder replacement engine (`@key@` syntax) used primarily to render SQL query templates at runtime. Handles special prefix conventions (`:$` to suppress single-quote wrapping) for ORDER BY and similar clauses.
+
+**Infrastructure used:**
+- [ ] PostgreSQL RDS (tables: N/A)
+- [ ] Redis #1 BE/Master (streams/keys: N/A)
+- [ ] Redis #2 FE/Frontend (channels: N/A)
+- [ ] S3 (buckets/prefixes: N/A)
+- [ ] Betfair Exchange API (endpoints: N/A)
+- [ ] Auth service: N/A
+- [ ] Other services: N/A
+
+**Local crate/package dependencies:**
+None — this IS a local crate. Referenced by consumers via path (not version-pinned).
+
+**Depends on (upstream):**
+Nothing (leaf dependency)
+
+**Depended on by (downstream):**
+- `api` (Rust Axum gateway) — confirmed
+- Potentially other Rust services (ASSUMPTION)
+
+**Key environment variables:**
+None — reads .properties files from paths provided by callers.
+
+**Deployment:**
+- ECR repo: N/A (library)
+- EKS Namespace: N/A
+- Helm chart: N/A
+
+**Failure modes:**
+| Fails        | Impact                     | Graceful? |
+|--------------|---------------------------|-----------|
+| RDS          | N/A                       | N/A       |
+| Redis #1     | N/A                       | N/A       |
+| Redis #2     | N/A                       | N/A       |
+| Betfair API  | N/A                       | N/A       |
+| This library has a bug | SQL queries render incorrectly in all consuming services; potential SQL injection or data leak | NO |
+
+**Systemic issues present in this repo:**
+| # | Issue | Status |
+|---|-------|--------|
+| 1 | Real credentials in .env | N/A |
+| 2 | Zero automated tests | **PRESENT** |
+| 3 | .expect()/panic!() in prod paths | **PRESENT** (line 189) |
+| 4 | Redis keys with no TTL | N/A |
+| 5 | No client_id filtering | N/A (library) |
+| 6 | Backup/temp files committed | ABSENT |
+| 7 | Dead code | **PRESENT** (59+ lines commented-out code, unused tracing dep) |
+| 8 | .env.sample out of sync | N/A |
+| 9 | Personal Docker Hub refs | N/A |
+| 10 | Azure Pipelines duplicate branch | N/A (no pipeline file) |
+| 11 | Local crate deps not version-pinned | N/A |
+
+**Top 3 immediate actions:**
+1. **Fix `.expect()` panic on line 189** — malformed HTTP request body crashes the consuming service (denial of service risk)
+2. **Add SQL injection protection** — `replace_placeholdersv2` does not sanitize replacement values; single-quote wrapping is not escaping
+3. **Remove 59+ lines of dead commented-out code and unused `tracing` dependency** — reduces confusion for new developers
+
+**Health score: 4/10** — Functional but has a crashable panic in the HTTP request path, potential SQL injection vector in the core template function, zero tests, and significant dead code. As a shared library, these issues propagate to all consumers.
