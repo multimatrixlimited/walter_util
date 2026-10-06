@@ -71,6 +71,100 @@ pub fn replace_placeholdersv2(
     Ok(modified_content)
 }
 
+#[derive(Debug, Clone, PartialEq)]
+pub struct ParameterizedQuery {
+    pub sql: String,
+    pub params: Vec<Option<String>>,
+}
+
+pub fn replace_placeholders_parameterized(
+    content: &str,
+    replacements: &HashMap<String, String>,
+    delimiter: char,
+) -> Result<ParameterizedQuery, ReplaceError> {
+    let mut modified_sql = String::new();
+    let mut params: Vec<Option<String>> = Vec::new();
+    let mut param_index_map: HashMap<String, usize> = HashMap::new();
+    let mut chars = content.chars();
+
+    while let Some(ch) = chars.next() {
+        if ch == delimiter {
+            // Check for @key@ pattern
+            let mut key = String::new();
+            while let Some(inner_ch) = chars.next() {
+                if inner_ch == delimiter {
+                    break;
+                }
+                key.push(inner_ch);
+            }
+
+            // Check if key is a dynamic SQL identifier (:$field, :$dir)
+            if key.starts_with(":$") {
+                if let Some(replacement) = replacements.get(&key[..]) {
+                    if key == ":$dir" {
+                        let trimmed = replacement.trim();
+                        if trimmed.eq_ignore_ascii_case("asc") {
+                            modified_sql.push_str("ASC");
+                        } else if trimmed.eq_ignore_ascii_case("desc") {
+                            modified_sql.push_str("DESC");
+                        } else {
+                            return Err(ReplaceError);
+                        }
+                    } else if key == ":$field" {
+                        let trimmed = replacement.trim();
+                        if !trimmed.is_empty() && trimmed.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') {
+                            modified_sql.push_str(trimmed);
+                        } else {
+                            return Err(ReplaceError);
+                        }
+                    } else {
+                        let trimmed = replacement.trim();
+                        if !trimmed.is_empty() && trimmed.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') {
+                            modified_sql.push_str(trimmed);
+                        } else {
+                            return Err(ReplaceError);
+                        }
+                    }
+                } else {
+                    return Err(ReplaceError);
+                }
+            } else {
+                // Regular data parameter: bind as $1, $2, ...
+                if let Some(replacement) = replacements.get(&key[..]) {
+                    let idx = if let Some(&existing_idx) = param_index_map.get(&key) {
+                        existing_idx
+                    } else {
+                        let new_idx = params.len() + 1;
+                        param_index_map.insert(key.clone(), new_idx);
+                        let val = if replacement == "null" {
+                            None
+                        } else {
+                            Some(replacement.clone())
+                        };
+                        params.push(val);
+                        new_idx
+                    };
+                    modified_sql.push('$');
+                    modified_sql.push_str(&idx.to_string());
+                } else {
+                    // If not found in replacements, keep original delimiter pattern
+                    modified_sql.push(delimiter);
+                    modified_sql.push_str(&key);
+                    modified_sql.push(delimiter);
+                }
+            }
+        } else {
+            modified_sql.push(ch);
+        }
+    }
+
+    Ok(ParameterizedQuery {
+        sql: modified_sql,
+        params,
+    })
+}
+
+
 
 // pub fn replace_placeholders(
 //     content: &str,
