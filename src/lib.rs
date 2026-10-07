@@ -27,7 +27,7 @@ pub fn replace_placeholdersv2(
         if ch == delimiter {
             // Check for @key@ pattern
             let mut key = String::new();
-            while let Some(inner_ch) = chars.next() {
+            for inner_ch in chars.by_ref() {
                 if inner_ch == delimiter {
                     break;
                 }
@@ -91,7 +91,7 @@ pub fn replace_placeholders_parameterized(
         if ch == delimiter {
             // Check for @key@ pattern
             let mut key = String::new();
-            while let Some(inner_ch) = chars.next() {
+            for inner_ch in chars.by_ref() {
                 if inner_ch == delimiter {
                     break;
                 }
@@ -107,13 +107,6 @@ pub fn replace_placeholders_parameterized(
                             modified_sql.push_str("ASC");
                         } else if trimmed.eq_ignore_ascii_case("desc") {
                             modified_sql.push_str("DESC");
-                        } else {
-                            return Err(ReplaceError);
-                        }
-                    } else if key == ":$field" {
-                        let trimmed = replacement.trim();
-                        if !trimmed.is_empty() && trimmed.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') {
-                            modified_sql.push_str(trimmed);
                         } else {
                             return Err(ReplaceError);
                         }
@@ -298,7 +291,7 @@ fn convert_json(json_str: &str) -> HashMap<String, Value> {
 pub fn process_payload(payload: Option<Json<Value>>) -> Value {
     let result = payload
         .map(|json| serde_json::to_string(&json.0))
-        .map(|result| result.and_then(|s| Ok(convert_json(&s))))
+        .map(|result| result.map(|s| convert_json(&s)))
         .transpose();
 
     match result {
@@ -307,3 +300,82 @@ pub fn process_payload(payload: Option<Json<Value>>) -> Value {
         Err(_err) => json!({}),
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_replace_placeholders_parameterized_basic() {
+        let mut replacements = HashMap::new();
+        replacements.insert("status".to_string(), "active".to_string());
+        replacements.insert("user_id".to_string(), "42".to_string());
+
+        let sql = "SELECT * FROM users WHERE status = @status@ AND id = @user_id@;";
+        let result = replace_placeholders_parameterized(sql, &replacements, '@').unwrap();
+
+        assert_eq!(result.sql, "SELECT * FROM users WHERE status = $1 AND id = $2;");
+        assert_eq!(result.params, vec![Some("active".to_string()), Some("42".to_string())]);
+    }
+
+    #[test]
+    fn test_replace_placeholders_parameterized_param_reuse() {
+        let mut replacements = HashMap::new();
+        replacements.insert(":page".to_string(), "1".to_string());
+        replacements.insert(":limit".to_string(), "20".to_string());
+
+        let sql = "SELECT * FROM bets LIMIT @:limit@ OFFSET @:page@ * @:limit@;";
+        let result = replace_placeholders_parameterized(sql, &replacements, '@').unwrap();
+
+        assert_eq!(result.sql, "SELECT * FROM bets LIMIT $1 OFFSET $2 * $1;");
+        assert_eq!(result.params, vec![Some("20".to_string()), Some("1".to_string())]);
+    }
+
+    #[test]
+    fn test_replace_placeholders_parameterized_dynamic_order_by() {
+        let mut replacements = HashMap::new();
+        replacements.insert(":$field".to_string(), "created_at".to_string());
+        replacements.insert(":$dir".to_string(), "desc".to_string());
+
+        let sql = "SELECT * FROM users ORDER BY @:$field@ @:$dir@;";
+        let result = replace_placeholders_parameterized(sql, &replacements, '@').unwrap();
+
+        assert_eq!(result.sql, "SELECT * FROM users ORDER BY created_at DESC;");
+        assert!(result.params.is_empty());
+    }
+
+    #[test]
+    fn test_replace_placeholders_parameterized_rejects_malicious_dir() {
+        let mut replacements = HashMap::new();
+        replacements.insert(":$dir".to_string(), "ASC; DROP TABLE users; --".to_string());
+
+        let sql = "SELECT * FROM users ORDER BY id @:$dir@;";
+        let result = replace_placeholders_parameterized(sql, &replacements, '@');
+
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_replace_placeholders_parameterized_rejects_malicious_field() {
+        let mut replacements = HashMap::new();
+        replacements.insert(":$field".to_string(), "id; DROP TABLE users; --".to_string());
+
+        let sql = "SELECT * FROM users ORDER BY @:$field@ ASC;";
+        let result = replace_placeholders_parameterized(sql, &replacements, '@');
+
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_replace_placeholders_parameterized_null_value() {
+        let mut replacements = HashMap::new();
+        replacements.insert("role".to_string(), "null".to_string());
+
+        let sql = "SELECT * FROM users WHERE role = @role@;";
+        let result = replace_placeholders_parameterized(sql, &replacements, '@').unwrap();
+
+        assert_eq!(result.sql, "SELECT * FROM users WHERE role = $1;");
+        assert_eq!(result.params, vec![None]);
+    }
+}
+
