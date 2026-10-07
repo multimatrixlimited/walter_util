@@ -345,6 +345,18 @@ mod tests {
     }
 
     #[test]
+    fn test_replace_placeholders_parameterized_asc_dir() {
+        let mut replacements = HashMap::new();
+        replacements.insert(":$dir".to_string(), "asc".to_string());
+
+        let sql = "SELECT * FROM users ORDER BY id @:$dir@;";
+        let result = replace_placeholders_parameterized(sql, &replacements, '@').unwrap();
+
+        assert_eq!(result.sql, "SELECT * FROM users ORDER BY id ASC;");
+        assert!(result.params.is_empty());
+    }
+
+    #[test]
     fn test_replace_placeholders_parameterized_rejects_malicious_dir() {
         let mut replacements = HashMap::new();
         replacements.insert(":$dir".to_string(), "ASC; DROP TABLE users; --".to_string());
@@ -367,6 +379,46 @@ mod tests {
     }
 
     #[test]
+    fn test_replace_placeholders_parameterized_empty_field() {
+        let mut replacements = HashMap::new();
+        replacements.insert(":$field".to_string(), "".to_string());
+
+        let sql = "SELECT * FROM users ORDER BY @:$field@;";
+        let result = replace_placeholders_parameterized(sql, &replacements, '@');
+
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_replace_placeholders_parameterized_missing_dollar_key() {
+        let replacements = HashMap::new();
+        let sql = "SELECT * FROM users ORDER BY @:$field@;";
+        let result = replace_placeholders_parameterized(sql, &replacements, '@');
+
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_replace_placeholders_parameterized_missing_key() {
+        let replacements = HashMap::new();
+        let sql = "SELECT * FROM users WHERE id = @missing@;";
+        let result = replace_placeholders_parameterized(sql, &replacements, '@').unwrap();
+
+        assert_eq!(result.sql, "SELECT * FROM users WHERE id = @missing@;");
+        assert!(result.params.is_empty());
+    }
+
+    #[test]
+    fn test_replace_placeholders_parameterized_no_placeholders() {
+        let replacements = HashMap::new();
+        let sql = "SELECT 1;";
+        let result = replace_placeholders_parameterized(sql, &replacements, '@').unwrap();
+
+        assert_eq!(result.sql, "SELECT 1;");
+        assert!(result.params.is_empty());
+    }
+
+    #[test]
     fn test_replace_placeholders_parameterized_null_value() {
         let mut replacements = HashMap::new();
         replacements.insert("role".to_string(), "null".to_string());
@@ -377,5 +429,131 @@ mod tests {
         assert_eq!(result.sql, "SELECT * FROM users WHERE role = $1;");
         assert_eq!(result.params, vec![None]);
     }
+
+    #[test]
+    fn test_replace_placeholdersv2_basic_string() {
+        let mut replacements = HashMap::new();
+        replacements.insert("name".to_string(), "alice".to_string());
+
+        let content = "SELECT * FROM users WHERE name = @name@;";
+        let result = replace_placeholdersv2(content, &replacements, '@').unwrap();
+
+        assert_eq!(result, "SELECT * FROM users WHERE name = 'alice';");
+    }
+
+    #[test]
+    fn test_replace_placeholdersv2_json_value() {
+        let mut replacements = HashMap::new();
+        replacements.insert("data".to_string(), "{\"count\":10}".to_string());
+
+        let content = "SELECT @data@;";
+        let result = replace_placeholdersv2(content, &replacements, '@').unwrap();
+
+        assert_eq!(result, "SELECT {\"count\":10};");
+    }
+
+    #[test]
+    fn test_replace_placeholdersv2_dollar_identifier() {
+        let mut replacements = HashMap::new();
+        replacements.insert(":$field".to_string(), "created_at".to_string());
+
+        let content = "SELECT * FROM users ORDER BY @:$field@;";
+        let result = replace_placeholdersv2(content, &replacements, '@').unwrap();
+
+        assert_eq!(result, "SELECT * FROM users ORDER BY created_at;");
+    }
+
+    #[test]
+    fn test_replace_placeholdersv2_missing_key() {
+        let replacements = HashMap::new();
+        let content = "SELECT * FROM users WHERE name = @missing@;";
+        let result = replace_placeholdersv2(content, &replacements, '@').unwrap();
+
+        assert_eq!(result, "SELECT * FROM users WHERE name = @missing@;");
+    }
+
+    #[test]
+    fn test_replace_placeholdersv2_no_placeholders() {
+        let replacements = HashMap::new();
+        let content = "SELECT * FROM users;";
+        let result = replace_placeholdersv2(content, &replacements, '@').unwrap();
+
+        assert_eq!(result, "SELECT * FROM users;");
+    }
+
+    #[test]
+    fn test_load_properties_existing_file() {
+        let temp_dir = std::env::temp_dir();
+        let test_file = temp_dir.join("test_walter_util.properties");
+        let content = "# Comment line\napi.get=/users\n# Another comment\napi.post=/users/create\ninvalid_line_without_equals\n";
+        fs::write(&test_file, content).unwrap();
+
+        let map = load_properties(test_file.to_str().unwrap());
+        assert_eq!(map.get("api.get"), Some(&"/users".to_string()));
+        assert_eq!(map.get("api.post"), Some(&"/users/create".to_string()));
+        assert_eq!(map.len(), 2);
+
+        let _ = fs::remove_file(&test_file);
+    }
+
+    #[test]
+    fn test_load_properties_missing_file() {
+        let map = load_properties("/nonexistent/file/path.properties");
+        assert!(map.is_empty());
+    }
+
+    #[test]
+    fn test_convert_json_to_hashmap_object() {
+        let json_val = json!({
+            "name": "Bob",
+            "age": 30,
+            "active": true
+        });
+        let map = convert_json_to_hashmap(&json_val);
+        assert_eq!(map.get("name"), Some(&"Bob".to_string()));
+        assert_eq!(map.get("age"), Some(&"30".to_string()));
+        assert_eq!(map.get("active"), Some(&"true".to_string()));
+    }
+
+    #[test]
+    fn test_convert_json_to_hashmap_non_object() {
+        let json_val = json!(["item1", "item2"]);
+        let map = convert_json_to_hashmap(&json_val);
+        assert!(map.is_empty());
+    }
+
+    #[test]
+    fn test_convert_json_renames_d_to_id() {
+        let json_str = r#"{"d": "123", "name": "Test"}"#;
+        let map = convert_json(json_str);
+        assert_eq!(map.get("id"), Some(&json!("123")));
+        assert_eq!(map.get("name"), Some(&json!("Test")));
+        assert!(!map.contains_key("d"));
+    }
+
+    #[test]
+    fn test_convert_json_non_object() {
+        let json_str = r#""plain string""#;
+        let map = convert_json(json_str);
+        assert!(map.is_empty());
+    }
+
+    #[test]
+    fn test_process_payload_some() {
+        let payload = Some(Json(json!({
+            "d": "456",
+            "val": "hello"
+        })));
+        let processed = process_payload(payload);
+        assert_eq!(processed["id"], json!("456"));
+        assert_eq!(processed["val"], json!("hello"));
+    }
+
+    #[test]
+    fn test_process_payload_none() {
+        let processed = process_payload(None);
+        assert_eq!(processed, json!({}));
+    }
 }
+
 
