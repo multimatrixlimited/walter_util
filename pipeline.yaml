@@ -1,0 +1,277 @@
+# Azure DevOps Pipeline - walter_util
+# Rust Library
+# Clippy / Unit Tests / Coverage / SonarQube / Semgrep / Gitleaks / Trivy SCA
+
+trigger:
+  branches:
+    include:
+      - dev
+      - main
+
+pr:
+  branches:
+    exclude:
+      - "*"
+
+
+pool:
+  vmImage: "ubuntu-latest"
+
+
+variables:
+  - name: SONARQUBE_SERVICE
+    value: "SonarQubeServiceConnection"
+
+  - group: sonarqube-settings
+
+
+steps:
+
+  # ============================================================
+  # CHECKOUT
+  # ============================================================
+  - checkout: self
+    fetchDepth: 0
+
+
+  # ============================================================
+  # VERIFY RUST PROJECT
+  # ============================================================
+  - script: |
+      set -euo pipefail
+
+      echo "=============================================="
+      echo "VERIFY WALTER_UTIL"
+      echo "=============================================="
+
+      rustc --version
+      cargo --version
+
+      test -f Cargo.toml
+      test -f Cargo.lock
+
+      echo
+      echo "Cargo project detected."
+
+    displayName: "Verify Rust Project"
+
+
+  # ============================================================
+  # INSTALL RUST COMPONENTS + COVERAGE TOOL
+  # ============================================================
+  - script: |
+      set -euo pipefail
+
+      echo "=============================================="
+      echo "INSTALL RUST TESTING TOOLS"
+      echo "=============================================="
+
+      rustup component add clippy
+      rustup component add llvm-tools-preview
+
+      cargo install cargo-llvm-cov \
+        --locked \
+        --version 0.9.1
+
+      cargo llvm-cov --version
+
+    displayName: "Install Rust Testing Tools"
+
+
+  # ============================================================
+  # CLIPPY LINT GATE
+  #
+  # No cargo fmt gate.
+  # ============================================================
+  - script: |
+      set -euo pipefail
+
+      echo "=============================================="
+      echo "RUST CLIPPY LINT GATE"
+      echo "=============================================="
+
+      cargo clippy \
+        --locked \
+        --all-targets \
+        --all-features \
+        -- \
+        -D warnings
+
+    displayName: "Rust Clippy Lint Gate"
+
+
+  # ============================================================
+  # UNIT TESTS + CODE COVERAGE
+  #
+  # cargo llvm-cov runs the Rust tests and generates LCOV.
+  # ============================================================
+  - script: |
+      set -euo pipefail
+
+      echo "=============================================="
+      echo "RUST UNIT TESTS + CODE COVERAGE"
+      echo "=============================================="
+
+      rm -rf coverage
+      mkdir -p coverage
+
+      cargo llvm-cov \
+        --locked \
+        --all-features \
+        --lcov \
+        --output-path coverage/lcov.info
+
+      echo
+      echo "=============================================="
+      echo "VERIFY COVERAGE"
+      echo "=============================================="
+
+      if [ ! -s coverage/lcov.info ]; then
+        echo "ERROR: coverage/lcov.info was not generated."
+        exit 1
+      fi
+
+      if ! grep -q '^SF:' coverage/lcov.info; then
+        echo "ERROR: coverage/lcov.info contains no source files."
+        exit 1
+      fi
+
+      echo "Coverage report generated:"
+      ls -lh coverage/lcov.info
+
+    displayName: "Rust Unit Tests + Code Coverage"
+
+
+  # ============================================================
+  # INSTALL NODE.JS FOR SONAR SCANNER
+  # ============================================================
+  - task: NodeTool@0
+    inputs:
+      versionSpec: "20.x"
+    displayName: "Install Node.js for SonarQube"
+
+
+  # ============================================================
+  # SONARQUBE SAST + QUALITY GATE
+  #
+  # Rust coverage:
+  #   coverage/lcov.info
+  #
+  # Quality Gate is blocking.
+  # ============================================================
+  - script: |
+      set -euo pipefail
+
+      echo "=============================================="
+      echo "SONARQUBE SAST + QUALITY GATE"
+      echo "=============================================="
+
+      SONAR_URL="$(SONARQUBE_URL)"
+
+      echo "Project: walter_util"
+      echo "Project Key: multimatrixlimited-walter-util"
+
+      echo
+      echo "Checking SonarQube connectivity..."
+
+      curl \
+        --fail \
+        --show-error \
+        --connect-timeout 10 \
+        --max-time 30 \
+        "${SONAR_URL}/api/server/version"
+
+      echo
+      echo "Running SonarQube analysis..."
+
+      npx --yes @sonar/scan@4.3.5 \
+        -Dsonar.projectKey=multimatrixlimited-walter-util \
+        -Dsonar.projectName=walter_util \
+        -Dsonar.sources=src \
+        -Dsonar.rust.lcov.reportPaths=coverage/lcov.info \
+        -Dsonar.exclusions="target/**,coverage/**" \
+        -Dsonar.host.url="${SONAR_URL}" \
+        -Dsonar.token="$(SONARQUBE_TOKEN)" \
+        -Dsonar.qualitygate.wait=true \
+        -Dsonar.qualitygate.timeout=300
+
+      echo
+      echo "=============================================="
+      echo "SONARQUBE QUALITY GATE PASSED"
+      echo "=============================================="
+
+    displayName: "Security - SonarQube SAST + Quality Gate"
+
+
+  # ============================================================
+  # SEMGREP SAST
+  # ============================================================
+  - script: |
+      set -euo pipefail
+
+      echo "=============================================="
+      echo "SEMGREP SAST"
+      echo "=============================================="
+
+      docker run --rm \
+        -v "$(Build.SourcesDirectory):/src:ro" \
+        -w /src \
+        semgrep/semgrep:latest \
+        semgrep scan \
+          --config auto \
+          --severity ERROR \
+          --error
+
+    displayName: "Security - Semgrep SAST"
+
+
+  # ============================================================
+  # GITLEAKS
+  #
+  # Current commit only, same standard used in your other repos.
+  # ============================================================
+  - script: |
+      set -euo pipefail
+
+      echo "=============================================="
+      echo "GITLEAKS SECRET SCAN"
+      echo "=============================================="
+
+      echo "Repository: $(Build.Repository.Name)"
+      echo "Commit: $(Build.SourceVersion)"
+
+      docker run --rm \
+        -v "$(Build.SourcesDirectory):/repo:ro" \
+        -w /repo \
+        zricethezav/gitleaks:v8.30.1 \
+        git \
+          --log-opts="-m --first-parent -1" \
+          --redact \
+          --exit-code 1 \
+          .
+
+    displayName: "Security - Gitleaks Secret Scan"
+
+
+  # ============================================================
+  # TRIVY SCA
+  #
+  # Scans Cargo.lock/Cargo.toml dependencies.
+  # ============================================================
+  - script: |
+      set -euo pipefail
+
+      echo "=============================================="
+      echo "TRIVY DEPENDENCY / SCA SCAN"
+      echo "=============================================="
+
+      docker run --rm \
+        -v "$(Build.SourcesDirectory):/src:ro" \
+        aquasec/trivy:latest \
+        fs \
+          --scanners vuln \
+          --severity HIGH,CRITICAL \
+          --exit-code 1 \
+          /src
+
+    displayName: "Security - Trivy SCA Scan"
