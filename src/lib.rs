@@ -11,65 +11,8 @@ use serde_json::json;
 #[derive(Debug)]
 pub struct ReplaceError;
 
-pub fn replace_placeholdersv2(
-    content: &str,
-    replacements: &HashMap<String, String>,
-    delimiter: char,
-) -> Result<String, ReplaceError> {
-    // tracing_subscriber::fmt()
-    //     .with_target(true)
-    //     .compact()
-    //     .init();
-    let mut modified_content = String::new();
-    let mut chars = content.chars();
-
-    while let Some(ch) = chars.next() {
-        if ch == delimiter {
-            // Check for @key@ pattern
-            let mut key = String::new();
-            for inner_ch in chars.by_ref() {
-                if inner_ch == delimiter {
-                    break;
-                }
-                key.push(inner_ch);
-            }
-
-            // Replace the placeholder if the key exists in replacements
-            if let Some(replacement) = replacements.get(&key[..]) {
-                if let Ok(json_value) = serde_json::from_str::<Value>(replacement) {
-                    // If the replacement value is a valid JSON, replace with JSON content
-                    modified_content.push_str(&json_value.to_string());
-                } else {
-                    // If not a JSON, replace with the simple replacement
-                    // event!(Level::INFO, "{} {}", &key, &replacement);
-                    if key.starts_with(":$") {
-                        modified_content.push_str(replacement);
-                    // } else 
-                    //     if key.starts_with(":!") {
-                    //         modified_content.push_str(replacement);
-                    //     } else 
-                    //     if key.starts_with(":+") {
-                    //         modified_content.push_str(replacement);
-                        } else {
-                            modified_content.push('\'');
-                        modified_content.push_str(replacement);
-                        modified_content.push('\'');
-                    }
-                }
-            } else {
-                // If the key is not found, keep the original pattern
-                modified_content.push(delimiter);
-                modified_content.push_str(&key);
-                modified_content.push(delimiter);
-            }
-        } else {
-            // If not part of a placeholder, just append the character
-            modified_content.push(ch);
-        }
-    }
-
-    Ok(modified_content)
-}
+// `replace_placeholdersv2` (string-interpolation engine) removed (PNIX-1982): it
+// was SQL-injectable. Use `replace_placeholders_parameterized` (bound $N markers).
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct ParameterizedQuery {
@@ -430,55 +373,58 @@ mod tests {
         assert_eq!(result.params, vec![None]);
     }
 
+    // SQL-injection regression (PNIX-1982): data values must bind as $N, never interpolate.
+
     #[test]
-    fn test_replace_placeholdersv2_basic_string() {
+    fn test_parameterized_or_1_eq_1_payload_is_bound_not_interpolated() {
         let mut replacements = HashMap::new();
-        replacements.insert("name".to_string(), "alice".to_string());
+        replacements.insert("name".to_string(), "admin' OR '1'='1".to_string());
 
-        let content = "SELECT * FROM users WHERE name = @name@;";
-        let result = replace_placeholdersv2(content, &replacements, '@').unwrap();
+        let result = replace_placeholders_parameterized(
+            "SELECT * FROM users WHERE name = @name@;",
+            &replacements,
+            '@',
+        )
+        .unwrap();
 
-        assert_eq!(result, "SELECT * FROM users WHERE name = 'alice';");
+        assert_eq!(result.sql, "SELECT * FROM users WHERE name = $1;");
+        assert!(!result.sql.contains("OR"));
+        assert!(!result.sql.contains('\''));
+        assert_eq!(result.params, vec![Some("admin' OR '1'='1".to_string())]);
     }
 
     #[test]
-    fn test_replace_placeholdersv2_json_value() {
+    fn test_parameterized_drop_table_payload_is_bound_not_interpolated() {
         let mut replacements = HashMap::new();
-        replacements.insert("data".to_string(), "{\"count\":10}".to_string());
+        replacements.insert("email".to_string(), "x'; DROP TABLE users;--".to_string());
 
-        let content = "SELECT @data@;";
-        let result = replace_placeholdersv2(content, &replacements, '@').unwrap();
+        let result = replace_placeholders_parameterized(
+            "SELECT * FROM users WHERE email = @email@;",
+            &replacements,
+            '@',
+        )
+        .unwrap();
 
-        assert_eq!(result, "SELECT {\"count\":10};");
+        assert_eq!(result.sql, "SELECT * FROM users WHERE email = $1;");
+        assert!(!result.sql.to_uppercase().contains("DROP"));
+        assert_eq!(result.params, vec![Some("x'; DROP TABLE users;--".to_string())]);
     }
 
     #[test]
-    fn test_replace_placeholdersv2_dollar_identifier() {
+    fn test_parameterized_embedded_single_quote_stays_in_param() {
         let mut replacements = HashMap::new();
-        replacements.insert(":$field".to_string(), "created_at".to_string());
+        replacements.insert("name".to_string(), "O'Reilly".to_string());
 
-        let content = "SELECT * FROM users ORDER BY @:$field@;";
-        let result = replace_placeholdersv2(content, &replacements, '@').unwrap();
+        let result = replace_placeholders_parameterized(
+            "SELECT * FROM users WHERE name = @name@;",
+            &replacements,
+            '@',
+        )
+        .unwrap();
 
-        assert_eq!(result, "SELECT * FROM users ORDER BY created_at;");
-    }
-
-    #[test]
-    fn test_replace_placeholdersv2_missing_key() {
-        let replacements = HashMap::new();
-        let content = "SELECT * FROM users WHERE name = @missing@;";
-        let result = replace_placeholdersv2(content, &replacements, '@').unwrap();
-
-        assert_eq!(result, "SELECT * FROM users WHERE name = @missing@;");
-    }
-
-    #[test]
-    fn test_replace_placeholdersv2_no_placeholders() {
-        let replacements = HashMap::new();
-        let content = "SELECT * FROM users;";
-        let result = replace_placeholdersv2(content, &replacements, '@').unwrap();
-
-        assert_eq!(result, "SELECT * FROM users;");
+        assert_eq!(result.sql, "SELECT * FROM users WHERE name = $1;");
+        assert!(!result.sql.contains('\''));
+        assert_eq!(result.params, vec![Some("O'Reilly".to_string())]);
     }
 
     #[test]
