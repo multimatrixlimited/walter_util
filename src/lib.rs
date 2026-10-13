@@ -11,65 +11,8 @@ use serde_json::json;
 #[derive(Debug)]
 pub struct ReplaceError;
 
-pub fn replace_placeholdersv2(
-    content: &str,
-    replacements: &HashMap<String, String>,
-    delimiter: char,
-) -> Result<String, ReplaceError> {
-    // tracing_subscriber::fmt()
-    //     .with_target(true)
-    //     .compact()
-    //     .init();
-    let mut modified_content = String::new();
-    let mut chars = content.chars();
-
-    while let Some(ch) = chars.next() {
-        if ch == delimiter {
-            // Check for @key@ pattern
-            let mut key = String::new();
-            while let Some(inner_ch) = chars.next() {
-                if inner_ch == delimiter {
-                    break;
-                }
-                key.push(inner_ch);
-            }
-
-            // Replace the placeholder if the key exists in replacements
-            if let Some(replacement) = replacements.get(&key[..]) {
-                if let Ok(json_value) = serde_json::from_str::<Value>(replacement) {
-                    // If the replacement value is a valid JSON, replace with JSON content
-                    modified_content.push_str(&json_value.to_string());
-                } else {
-                    // If not a JSON, replace with the simple replacement
-                    // event!(Level::INFO, "{} {}", &key, &replacement);
-                    if key.starts_with(":$") {
-                        modified_content.push_str(replacement);
-                    // } else 
-                    //     if key.starts_with(":!") {
-                    //         modified_content.push_str(replacement);
-                    //     } else 
-                    //     if key.starts_with(":+") {
-                    //         modified_content.push_str(replacement);
-                        } else {
-                            modified_content.push('\'');
-                        modified_content.push_str(replacement);
-                        modified_content.push('\'');
-                    }
-                }
-            } else {
-                // If the key is not found, keep the original pattern
-                modified_content.push(delimiter);
-                modified_content.push_str(&key);
-                modified_content.push(delimiter);
-            }
-        } else {
-            // If not part of a placeholder, just append the character
-            modified_content.push(ch);
-        }
-    }
-
-    Ok(modified_content)
-}
+// `replace_placeholdersv2` (string-interpolation engine) removed (PNIX-1982): it
+// was SQL-injectable. Use `replace_placeholders_parameterized` (bound $N markers).
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct ParameterizedQuery {
@@ -91,7 +34,7 @@ pub fn replace_placeholders_parameterized(
         if ch == delimiter {
             // Check for @key@ pattern
             let mut key = String::new();
-            while let Some(inner_ch) = chars.next() {
+            for inner_ch in chars.by_ref() {
                 if inner_ch == delimiter {
                     break;
                 }
@@ -107,13 +50,6 @@ pub fn replace_placeholders_parameterized(
                             modified_sql.push_str("ASC");
                         } else if trimmed.eq_ignore_ascii_case("desc") {
                             modified_sql.push_str("DESC");
-                        } else {
-                            return Err(ReplaceError);
-                        }
-                    } else if key == ":$field" {
-                        let trimmed = replacement.trim();
-                        if !trimmed.is_empty() && trimmed.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') {
-                            modified_sql.push_str(trimmed);
                         } else {
                             return Err(ReplaceError);
                         }
@@ -298,7 +234,7 @@ fn convert_json(json_str: &str) -> HashMap<String, Value> {
 pub fn process_payload(payload: Option<Json<Value>>) -> Value {
     let result = payload
         .map(|json| serde_json::to_string(&json.0))
-        .map(|result| result.and_then(|s| Ok(convert_json(&s))))
+        .map(|result| result.map(|s| convert_json(&s)))
         .transpose();
 
     match result {
@@ -307,3 +243,263 @@ pub fn process_payload(payload: Option<Json<Value>>) -> Value {
         Err(_err) => json!({}),
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_replace_placeholders_parameterized_basic() {
+        let mut replacements = HashMap::new();
+        replacements.insert("status".to_string(), "active".to_string());
+        replacements.insert("user_id".to_string(), "42".to_string());
+
+        let sql = "SELECT * FROM users WHERE status = @status@ AND id = @user_id@;";
+        let result = replace_placeholders_parameterized(sql, &replacements, '@').unwrap();
+
+        assert_eq!(result.sql, "SELECT * FROM users WHERE status = $1 AND id = $2;");
+        assert_eq!(result.params, vec![Some("active".to_string()), Some("42".to_string())]);
+    }
+
+    #[test]
+    fn test_replace_placeholders_parameterized_param_reuse() {
+        let mut replacements = HashMap::new();
+        replacements.insert(":page".to_string(), "1".to_string());
+        replacements.insert(":limit".to_string(), "20".to_string());
+
+        let sql = "SELECT * FROM bets LIMIT @:limit@ OFFSET @:page@ * @:limit@;";
+        let result = replace_placeholders_parameterized(sql, &replacements, '@').unwrap();
+
+        assert_eq!(result.sql, "SELECT * FROM bets LIMIT $1 OFFSET $2 * $1;");
+        assert_eq!(result.params, vec![Some("20".to_string()), Some("1".to_string())]);
+    }
+
+    #[test]
+    fn test_replace_placeholders_parameterized_dynamic_order_by() {
+        let mut replacements = HashMap::new();
+        replacements.insert(":$field".to_string(), "created_at".to_string());
+        replacements.insert(":$dir".to_string(), "desc".to_string());
+
+        let sql = "SELECT * FROM users ORDER BY @:$field@ @:$dir@;";
+        let result = replace_placeholders_parameterized(sql, &replacements, '@').unwrap();
+
+        assert_eq!(result.sql, "SELECT * FROM users ORDER BY created_at DESC;");
+        assert!(result.params.is_empty());
+    }
+
+    #[test]
+    fn test_replace_placeholders_parameterized_asc_dir() {
+        let mut replacements = HashMap::new();
+        replacements.insert(":$dir".to_string(), "asc".to_string());
+
+        let sql = "SELECT * FROM users ORDER BY id @:$dir@;";
+        let result = replace_placeholders_parameterized(sql, &replacements, '@').unwrap();
+
+        assert_eq!(result.sql, "SELECT * FROM users ORDER BY id ASC;");
+        assert!(result.params.is_empty());
+    }
+
+    #[test]
+    fn test_replace_placeholders_parameterized_rejects_malicious_dir() {
+        let mut replacements = HashMap::new();
+        replacements.insert(":$dir".to_string(), "ASC; DROP TABLE users; --".to_string());
+
+        let sql = "SELECT * FROM users ORDER BY id @:$dir@;";
+        let result = replace_placeholders_parameterized(sql, &replacements, '@');
+
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_replace_placeholders_parameterized_rejects_malicious_field() {
+        let mut replacements = HashMap::new();
+        replacements.insert(":$field".to_string(), "id; DROP TABLE users; --".to_string());
+
+        let sql = "SELECT * FROM users ORDER BY @:$field@ ASC;";
+        let result = replace_placeholders_parameterized(sql, &replacements, '@');
+
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_replace_placeholders_parameterized_empty_field() {
+        let mut replacements = HashMap::new();
+        replacements.insert(":$field".to_string(), "".to_string());
+
+        let sql = "SELECT * FROM users ORDER BY @:$field@;";
+        let result = replace_placeholders_parameterized(sql, &replacements, '@');
+
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_replace_placeholders_parameterized_missing_dollar_key() {
+        let replacements = HashMap::new();
+        let sql = "SELECT * FROM users ORDER BY @:$field@;";
+        let result = replace_placeholders_parameterized(sql, &replacements, '@');
+
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_replace_placeholders_parameterized_missing_key() {
+        let replacements = HashMap::new();
+        let sql = "SELECT * FROM users WHERE id = @missing@;";
+        let result = replace_placeholders_parameterized(sql, &replacements, '@').unwrap();
+
+        assert_eq!(result.sql, "SELECT * FROM users WHERE id = @missing@;");
+        assert!(result.params.is_empty());
+    }
+
+    #[test]
+    fn test_replace_placeholders_parameterized_no_placeholders() {
+        let replacements = HashMap::new();
+        let sql = "SELECT 1;";
+        let result = replace_placeholders_parameterized(sql, &replacements, '@').unwrap();
+
+        assert_eq!(result.sql, "SELECT 1;");
+        assert!(result.params.is_empty());
+    }
+
+    #[test]
+    fn test_replace_placeholders_parameterized_null_value() {
+        let mut replacements = HashMap::new();
+        replacements.insert("role".to_string(), "null".to_string());
+
+        let sql = "SELECT * FROM users WHERE role = @role@;";
+        let result = replace_placeholders_parameterized(sql, &replacements, '@').unwrap();
+
+        assert_eq!(result.sql, "SELECT * FROM users WHERE role = $1;");
+        assert_eq!(result.params, vec![None]);
+    }
+
+    // SQL-injection regression (PNIX-1982): data values must bind as $N, never interpolate.
+
+    #[test]
+    fn test_parameterized_or_1_eq_1_payload_is_bound_not_interpolated() {
+        let mut replacements = HashMap::new();
+        replacements.insert("name".to_string(), "admin' OR '1'='1".to_string());
+
+        let result = replace_placeholders_parameterized(
+            "SELECT * FROM users WHERE name = @name@;",
+            &replacements,
+            '@',
+        )
+        .unwrap();
+
+        assert_eq!(result.sql, "SELECT * FROM users WHERE name = $1;");
+        assert!(!result.sql.contains("OR"));
+        assert!(!result.sql.contains('\''));
+        assert_eq!(result.params, vec![Some("admin' OR '1'='1".to_string())]);
+    }
+
+    #[test]
+    fn test_parameterized_drop_table_payload_is_bound_not_interpolated() {
+        let mut replacements = HashMap::new();
+        replacements.insert("email".to_string(), "x'; DROP TABLE users;--".to_string());
+
+        let result = replace_placeholders_parameterized(
+            "SELECT * FROM users WHERE email = @email@;",
+            &replacements,
+            '@',
+        )
+        .unwrap();
+
+        assert_eq!(result.sql, "SELECT * FROM users WHERE email = $1;");
+        assert!(!result.sql.to_uppercase().contains("DROP"));
+        assert_eq!(result.params, vec![Some("x'; DROP TABLE users;--".to_string())]);
+    }
+
+    #[test]
+    fn test_parameterized_embedded_single_quote_stays_in_param() {
+        let mut replacements = HashMap::new();
+        replacements.insert("name".to_string(), "O'Reilly".to_string());
+
+        let result = replace_placeholders_parameterized(
+            "SELECT * FROM users WHERE name = @name@;",
+            &replacements,
+            '@',
+        )
+        .unwrap();
+
+        assert_eq!(result.sql, "SELECT * FROM users WHERE name = $1;");
+        assert!(!result.sql.contains('\''));
+        assert_eq!(result.params, vec![Some("O'Reilly".to_string())]);
+    }
+
+    #[test]
+    fn test_load_properties_existing_file() {
+        let temp_dir = std::env::temp_dir();
+        let test_file = temp_dir.join("test_walter_util.properties");
+        let content = "# Comment line\napi.get=/users\n# Another comment\napi.post=/users/create\ninvalid_line_without_equals\n";
+        fs::write(&test_file, content).unwrap();
+
+        let map = load_properties(test_file.to_str().unwrap());
+        assert_eq!(map.get("api.get"), Some(&"/users".to_string()));
+        assert_eq!(map.get("api.post"), Some(&"/users/create".to_string()));
+        assert_eq!(map.len(), 2);
+
+        let _ = fs::remove_file(&test_file);
+    }
+
+    #[test]
+    fn test_load_properties_missing_file() {
+        let map = load_properties("/nonexistent/file/path.properties");
+        assert!(map.is_empty());
+    }
+
+    #[test]
+    fn test_convert_json_to_hashmap_object() {
+        let json_val = json!({
+            "name": "Bob",
+            "age": 30,
+            "active": true
+        });
+        let map = convert_json_to_hashmap(&json_val);
+        assert_eq!(map.get("name"), Some(&"Bob".to_string()));
+        assert_eq!(map.get("age"), Some(&"30".to_string()));
+        assert_eq!(map.get("active"), Some(&"true".to_string()));
+    }
+
+    #[test]
+    fn test_convert_json_to_hashmap_non_object() {
+        let json_val = json!(["item1", "item2"]);
+        let map = convert_json_to_hashmap(&json_val);
+        assert!(map.is_empty());
+    }
+
+    #[test]
+    fn test_convert_json_renames_d_to_id() {
+        let json_str = r#"{"d": "123", "name": "Test"}"#;
+        let map = convert_json(json_str);
+        assert_eq!(map.get("id"), Some(&json!("123")));
+        assert_eq!(map.get("name"), Some(&json!("Test")));
+        assert!(!map.contains_key("d"));
+    }
+
+    #[test]
+    fn test_convert_json_non_object() {
+        let json_str = r#""plain string""#;
+        let map = convert_json(json_str);
+        assert!(map.is_empty());
+    }
+
+    #[test]
+    fn test_process_payload_some() {
+        let payload = Some(Json(json!({
+            "d": "456",
+            "val": "hello"
+        })));
+        let processed = process_payload(payload);
+        assert_eq!(processed["id"], json!("456"));
+        assert_eq!(processed["val"], json!("hello"));
+    }
+
+    #[test]
+    fn test_process_payload_none() {
+        let processed = process_payload(None);
+        assert_eq!(processed, json!({}));
+    }
+}
+
+
